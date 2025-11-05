@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     time::Duration,
 };
 
@@ -25,10 +25,16 @@ use crate::{impl_on_click, impl_wrapper};
 
 use super::Module;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Device {
+    pub icon: &'static str,
+    pub name: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Controller {
     pub is_powered: bool,
-    pub connected_devices: Vec<String>,
+    pub connected_devices: HashSet<Device>,
     // TODO show more information and control pannel when clicked
     // pub paired_devices: Vec<String>,
     // pub adapter: Adapter,
@@ -67,6 +73,13 @@ impl BluetoothMod {
             .get(&enabled)
             .expect("bluetooth icon already set in module")
     }
+    fn connected_devices(&self) -> HashSet<&Device> {
+        let mut devices = HashSet::new();
+        for c in self.controllers.iter() {
+            devices.extend(&c.connected_devices);
+        }
+        devices
+    }
 }
 
 impl Module for BluetoothMod {
@@ -81,15 +94,21 @@ impl Module for BluetoothMod {
         anchor: &BarAnchor,
         _handlebars: &Handlebars,
     ) -> Element<Message> {
-        let bt_text = if let Some(bt_device) = self
-            .controllers
-            .first()
-            .map(|c| c.connected_devices.first())
-            .flatten()
-        {
-            bt_device
-        } else {
-            self.icon()
+        let connected_devices = self.connected_devices();
+        let bt_text = match connected_devices.len() {
+            0 => self.icon().to_string(),
+            // show name if only one connected device
+            1 => {
+                let device = connected_devices.iter().next().unwrap();
+                format!("{} {}", device.icon, device.name)
+            }
+            // show icons for connected bluetooth devices
+            _ => connected_devices
+                .iter()
+                .fold(String::new(), |mut acc, elem| {
+                    acc.push_str(elem.icon);
+                    acc
+                }),
         };
 
         button(
@@ -178,10 +197,10 @@ async fn get_controllers(session: &mut bluer::Session) -> Result<Vec<Controller>
     }
     Ok(controllers)
 }
-pub async fn get_all_devices(adapter: &Adapter) -> Result<Vec<String>, io::Error> {
+pub async fn get_all_devices(adapter: &Adapter) -> Result<HashSet<Device>, io::Error> {
     // TODO get paired_deviced at the same time
 
-    let mut connected_devices: Vec<String> = Vec::new();
+    let mut connected_devices = HashSet::new();
 
     let connected_devices_addresses = adapter.device_addresses().await?;
     for addr in connected_devices_addresses {
@@ -202,7 +221,10 @@ pub async fn get_all_devices(adapter: &Adapter) -> Result<Vec<String>, io::Error
             _ => "",
         };
         if device.is_connected().await? {
-            connected_devices.push(format!("{icon:} {:}", device.alias().await?));
+            connected_devices.insert(Device {
+                icon,
+                name: device.alias().await?,
+            });
         }
     }
     Ok(connected_devices)
