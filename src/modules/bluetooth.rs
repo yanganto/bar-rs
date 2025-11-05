@@ -43,6 +43,60 @@ pub struct Controller {
     // pub is_discoverable: bool,
 }
 
+impl Controller {
+    pub async fn get_all_devices(adapter: &Adapter) -> Result<HashSet<Device>, io::Error> {
+        // TODO get paired_deviced at the same time
+
+        let mut connected_devices = HashSet::new();
+
+        let connected_devices_addresses = adapter.device_addresses().await?;
+        for addr in connected_devices_addresses {
+            let device = adapter.device(addr)?;
+
+            let icon = match device.icon().await?.unwrap_or("None".to_string()).as_ref() {
+                "audio-card" => "󰓃",
+                "audio-input-microphone" => "",
+                "audio-headphones" | "audio-headset" => "󰋋",
+                "battery" => "󰂀",
+                "camera-photo" => "󰻛",
+                "computer" => "",
+                "input-keyboard" => "󰌌",
+                "input-mouse" => "󰍽",
+                "input-gaming" => "󰊴",
+                "phone" => "󰏲",
+                "None" => "",
+                _ => "",
+            };
+            if device.is_connected().await? {
+                connected_devices.insert(Device {
+                    icon,
+                    name: device.alias().await?,
+                });
+            }
+        }
+        Ok(connected_devices)
+    }
+
+    async fn from_adaper(adapter: Adapter) -> Result<Controller, io::Error> {
+        let is_powered = adapter.is_powered().await?;
+        // let name = adapter.name().to_owned();
+        // let is_pairable = adapter.is_pairable().await?;
+        // let is_discoverable = adapter.is_discoverable().await?;
+
+        Ok(Controller {
+            // name,
+            // is_pairable,
+            // is_discoverable,
+            is_powered,
+            connected_devices: if is_powered {
+                Controller::get_all_devices(&adapter).await?
+            } else {
+                HashSet::default()
+            },
+        })
+    }
+}
+
 #[derive(Debug, Builder)]
 pub struct BluetoothMod {
     controllers: Vec<Controller>,
@@ -153,9 +207,23 @@ impl Module for BluetoothMod {
     fn subscription(&self) -> Option<iced::Subscription<Message>> {
         Some(Subscription::run(|| {
             stream::channel(1, |mut sender| async move {
-                if let Ok(mut session) = bluer::Session::new().await {
+                if let Ok(session) = bluer::Session::new().await {
                     loop {
-                        let controllers = get_controllers(&mut session).await.unwrap();
+                        let mut controllers: Vec<Controller> = Vec::new();
+                        if let Ok(adapter_names) = session.adapter_names().await {
+                            for adapter_name in adapter_names {
+                                // swallow any io errors for fetch adaper informations, because it will
+                                // because it frequently fetch in a loop
+                                if let Ok(adapter) = session.adapter(&adapter_name) {
+                                    if let Ok(controller) = Controller::from_adaper(adapter).await {
+                                        controllers.push(controller);
+                                    }
+                                }
+                            }
+                        } else {
+                            // no bt adapter
+                            return;
+                        }
                         if sender
                             .send(Message::update(move |reg| {
                                 let m = reg.get_module_mut::<BluetoothMod>();
@@ -172,60 +240,4 @@ impl Module for BluetoothMod {
             })
         }))
     }
-}
-async fn get_controllers(session: &mut bluer::Session) -> Result<Vec<Controller>, io::Error> {
-    let mut controllers: Vec<Controller> = Vec::new();
-    let adapter_names = session.adapter_names().await?;
-    for adapter_name in adapter_names {
-        if let Ok(adapter) = session.adapter(&adapter_name) {
-            let is_powered = adapter.is_powered().await?;
-            // let name = adapter.name().to_owned();
-            // let is_pairable = adapter.is_pairable().await?;
-            // let is_discoverable = adapter.is_discoverable().await?;
-
-            let connected_devices = get_all_devices(&adapter).await?;
-
-            let controller = Controller {
-                is_powered,
-                connected_devices,
-                // name,
-                // is_pairable,
-                // is_discoverable,
-            };
-            controllers.push(controller);
-        }
-    }
-    Ok(controllers)
-}
-pub async fn get_all_devices(adapter: &Adapter) -> Result<HashSet<Device>, io::Error> {
-    // TODO get paired_deviced at the same time
-
-    let mut connected_devices = HashSet::new();
-
-    let connected_devices_addresses = adapter.device_addresses().await?;
-    for addr in connected_devices_addresses {
-        let device = adapter.device(addr)?;
-
-        let icon = match device.icon().await?.unwrap_or("None".to_string()).as_ref() {
-            "audio-card" => "󰓃",
-            "audio-input-microphone" => "",
-            "audio-headphones" | "audio-headset" => "󰋋",
-            "battery" => "󰂀",
-            "camera-photo" => "󰻛",
-            "computer" => "",
-            "input-keyboard" => "󰌌",
-            "input-mouse" => "󰍽",
-            "input-gaming" => "󰊴",
-            "phone" => "󰏲",
-            "None" => "",
-            _ => "",
-        };
-        if device.is_connected().await? {
-            connected_devices.insert(Device {
-                icon,
-                name: device.alias().await?,
-            });
-        }
-    }
-    Ok(connected_devices)
 }
